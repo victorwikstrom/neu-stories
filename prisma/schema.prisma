@@ -1,0 +1,119 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// Enums
+enum StoryStatus {
+  DRAFT
+  REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SectionType {
+  WHAT_HAPPENED
+  BACKGROUND
+  RELATED
+}
+
+enum SourceType {
+  EXTERNAL
+  NUO
+}
+
+enum TargetType {
+  STORY
+  SOURCE
+}
+
+// Models
+model Story {
+  id                     String        @id @default(cuid())
+  slug                   String        @unique
+  headline               String
+  summary                String
+  status                 StoryStatus   @default(DRAFT)
+  heroImageUrl           String
+  heroImageAlt           String
+  heroImageSourceCredit  String?
+  tags                   String[]
+  publishedAt            DateTime?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  
+  // Relations
+  sections               Section[]
+  storySources           StorySource[]
+}
+
+model Section {
+  id         String          @id @default(cuid())
+  storyId    String
+  type       SectionType
+  title      String?
+  body       String
+  order      Int
+  
+  // Relations
+  story            Story            @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  sectionSources   SectionSource[]
+  
+  @@index([storyId])
+}
+
+model Source {
+  id      String     @id @default(cuid())
+  url     String
+  label   String
+  domain  String
+  type    SourceType
+  
+  // Relations
+  storySources     StorySource[]
+  sectionSources   SectionSource[]
+}
+
+model StorySource {
+  storyId   String
+  sourceId  String
+  
+  // Relations
+  story   Story   @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  source  Source  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  
+  @@id([storyId, sourceId])
+  @@index([sourceId])
+}
+
+model SectionSource {
+  sectionId  String
+  sourceId   String
+  
+  // Relations
+  section  Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  source   Source   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  
+  @@id([sectionId, sourceId])
+  @@index([sourceId])
+}
+
+model SavedItem {
+  id          String      @id @default(cuid())
+  userId      String
+  targetType  TargetType
+  targetId    String
+  createdAt   DateTime    @default(now())
+  
+  @@index([userId])
+  @@index([targetType, targetId])
+}
+
