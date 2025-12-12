@@ -39,7 +39,7 @@ export const StorySchema = z.object({
   headline: z.string(),
   summary: z.string(),
   status: z.enum(['draft', 'review', 'published', 'archived']),
-  heroImage: HeroImageSchema,
+  heroImage: HeroImageSchema.optional(),
   sections: z.array(SectionSchema),
   primarySources: z.array(SourceSchema),
   tags: z.array(z.string()).optional(),
@@ -52,7 +52,6 @@ export type Story = z.infer<typeof StorySchema>;
 
 // SavedItem Schema
 export const SavedItemSchema = z.object({
-  id: z.string(),
   userId: z.string(),
   targetType: z.enum(['story', 'source']),
   targetId: z.string(),

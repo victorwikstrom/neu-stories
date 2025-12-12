@@ -7,7 +7,7 @@ const StoryDraftInputSchema = z.object({
   slug: z.string(),
   headline: z.string(),
   summary: z.string(),
-  heroImage: HeroImageSchema,
+  heroImage: HeroImageSchema.optional(),
   sections: z.array(
     z.object({
       type: z.enum(['what_happened', 'background', 'related']),

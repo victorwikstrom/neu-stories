@@ -27,7 +27,7 @@ export type StoryDraftInput = {
   slug: string;
   headline: string;
   summary: string;
-  heroImage: {
+  heroImage?: {
     url: string;
     alt: string;
     sourceCredit?: string;
@@ -97,11 +97,11 @@ function mapPrismaStoryToDomain(prismaStory: PrismaStoryWithRelations): Story {
     headline: prismaStory.headline,
     summary: prismaStory.summary,
     status: prismaStory.status.toLowerCase() as 'draft' | 'review' | 'published' | 'archived',
-    heroImage: {
+    heroImage: prismaStory.heroImageUrl && prismaStory.heroImageAlt ? {
       url: prismaStory.heroImageUrl,
       alt: prismaStory.heroImageAlt,
       sourceCredit: prismaStory.heroImageSourceCredit ?? undefined,
-    },
+    } : undefined,
     sections: prismaStory.sections.map(mapPrismaSectionToDomain),
     primarySources: prismaStory.storySources.map(ss => mapPrismaSourceToDomain(ss.source)),
     tags: prismaStory.tags.length > 0 ? prismaStory.tags : undefined,
@@ -224,9 +224,9 @@ export async function upsertStoryDraft(input: StoryDraftInput): Promise<Story> {
       slug: input.slug,
       headline: input.headline,
       summary: input.summary,
-      heroImageUrl: input.heroImage.url,
-      heroImageAlt: input.heroImage.alt,
-      heroImageSourceCredit: input.heroImage.sourceCredit,
+      heroImageUrl: input.heroImage?.url,
+      heroImageAlt: input.heroImage?.alt,
+      heroImageSourceCredit: input.heroImage?.sourceCredit,
       status,
       tags: input.tags ?? [],
       sections: {
@@ -245,9 +245,9 @@ export async function upsertStoryDraft(input: StoryDraftInput): Promise<Story> {
     update: {
       headline: input.headline,
       summary: input.summary,
-      heroImageUrl: input.heroImage.url,
-      heroImageAlt: input.heroImage.alt,
-      heroImageSourceCredit: input.heroImage.sourceCredit,
+      heroImageUrl: input.heroImage?.url,
+      heroImageAlt: input.heroImage?.alt,
+      heroImageSourceCredit: input.heroImage?.sourceCredit,
       status,
       tags: input.tags ?? [],
       sections: {
