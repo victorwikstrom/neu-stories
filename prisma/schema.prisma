@@ -42,8 +42,8 @@ model Story {
   headline               String
   summary                String
   status                 StoryStatus   @default(DRAFT)
-  heroImageUrl           String
-  heroImageAlt           String
+  heroImageUrl           String?
+  heroImageAlt           String?
   heroImageSourceCredit  String?
   tags                   String[]
   publishedAt            DateTime?
@@ -53,6 +53,9 @@ model Story {
   // Relations
   sections               Section[]
   storySources           StorySource[]
+  
+  @@index([status, publishedAt])
+  @@index([publishedAt])
 }
 
 model Section {
@@ -67,15 +70,17 @@ model Section {
   story            Story            @relation(fields: [storyId], references: [id], onDelete: Cascade)
   sectionSources   SectionSource[]
   
+  @@unique([storyId, order])
   @@index([storyId])
 }
 
 model Source {
-  id      String     @id @default(cuid())
-  url     String
-  label   String
-  domain  String
-  type    SourceType
+  id         String     @id @default(cuid())
+  url        String     @unique
+  label      String
+  domain     String
+  type       SourceType
+  createdAt  DateTime   @default(now())
   
   // Relations
   storySources     StorySource[]
@@ -107,12 +112,12 @@ model SectionSource {
 }
 
 model SavedItem {
-  id          String      @id @default(cuid())
   userId      String
   targetType  TargetType
   targetId    String
   createdAt   DateTime    @default(now())
   
+  @@id([userId, targetType, targetId])
   @@index([userId])
   @@index([targetType, targetId])
 }
