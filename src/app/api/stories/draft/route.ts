@@ -24,10 +24,15 @@ const StoryDraftInputSchema = z.object({
       label: z.string(),
       domain: z.string(),
       type: z.enum(['external', 'nuo']),
+      publisherName: z.string().optional(),
+      retrievedAt: z.string().datetime().optional(),
     })
   ),
   tags: z.array(z.string()).optional(),
   status: z.enum(['draft', 'review']).optional(),
+  promptVersion: z.string().optional(),
+  modelName: z.string().optional(),
+  generatedAt: z.string().datetime().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -51,7 +56,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const story = await upsertStoryDraft(validationResult.data);
+    const data = validationResult.data;
+    const storyInput = {
+      ...data,
+      primarySources: data.primarySources.map(source => ({
+        ...source,
+        retrievedAt: source.retrievedAt ? new Date(source.retrievedAt) : undefined,
+      })),
+      generatedAt: data.generatedAt ? new Date(data.generatedAt) : undefined,
+    };
+
+    const story = await upsertStoryDraft(storyInput);
 
     return NextResponse.json(story, { status: 201 });
   } catch (error) {

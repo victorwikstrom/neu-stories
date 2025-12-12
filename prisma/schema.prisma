@@ -35,6 +35,15 @@ enum TargetType {
   SOURCE
 }
 
+enum IngestionJobStatus {
+  QUEUED
+  FETCHING
+  EXTRACTING
+  GENERATING
+  SAVED
+  FAILED
+}
+
 // Models
 model Story {
   id                     String        @id @default(cuid())
@@ -50,9 +59,15 @@ model Story {
   createdAt              DateTime      @default(now())
   updatedAt              DateTime      @updatedAt
   
+  // AI provenance
+  promptVersion          String?
+  modelName              String?
+  generatedAt            DateTime?
+  
   // Relations
   sections               Section[]
   storySources           StorySource[]
+  ingestionJobs          IngestionJob[]
   
   @@index([status, publishedAt])
   @@index([publishedAt])
@@ -75,13 +90,15 @@ model Section {
 }
 
 model Source {
-  id         String     @id @default(cuid())
-  url        String     @unique
-  label      String
-  domain     String
-  type       SourceType
-  createdAt  DateTime   @default(now())
-  updatedAt  DateTime   @updatedAt
+  id             String     @id @default(cuid())
+  url            String     @unique
+  label          String
+  domain         String
+  type           SourceType
+  publisherName  String?
+  retrievedAt    DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
   
   // Relations
   storySources     StorySource[]
@@ -121,5 +138,36 @@ model SavedItem {
   @@id([userId, targetType, targetId])
   @@index([userId])
   @@index([targetType, targetId])
+}
+
+model IngestionJob {
+  id           String               @id @default(cuid())
+  url          String
+  status       IngestionJobStatus   @default(QUEUED)
+  errorMessage String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  
+  // Optional metadata
+  fetchedAt    DateTime?
+  extractedAt  DateTime?
+  generatedAt  DateTime?
+  httpStatus   Int?
+  contentType  String?
+  
+  // Raw HTML snapshot from fetching
+  rawHtml      String?
+  
+  // Extracted content from HTML
+  extractedTitle String?
+  extractedText  String?
+  
+  // Reference to generated story
+  storyId      String?
+  story        Story?    @relation(fields: [storyId], references: [id])
+  
+  @@index([status])
+  @@index([createdAt])
+  @@index([storyId])
 }
 

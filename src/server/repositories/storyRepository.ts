@@ -45,18 +45,25 @@ export type StoryDraftInput = {
     label: string;
     domain: string;
     type: 'external' | 'nuo';
+    publisherName?: string;
+    retrievedAt?: Date;
   }>;
   tags?: string[];
   status?: 'draft' | 'review' | 'published' | 'archived';
+  promptVersion?: string;
+  modelName?: string;
+  generatedAt?: Date;
 };
 
-function mapPrismaSourceToDomain(prismaSource: { id: string; url: string; label: string; domain: string; type: string }): Source {
+function mapPrismaSourceToDomain(prismaSource: { id: string; url: string; label: string; domain: string; type: string; publisherName: string | null; retrievedAt: Date | null }): Source {
   return {
     id: prismaSource.id,
     url: prismaSource.url,
     label: prismaSource.label,
     domain: prismaSource.domain,
     type: prismaSource.type.toLowerCase() as 'external' | 'nuo',
+    publisherName: prismaSource.publisherName ?? undefined,
+    retrievedAt: prismaSource.retrievedAt?.toISOString(),
   };
 }
 
@@ -108,6 +115,9 @@ function mapPrismaStoryToDomain(prismaStory: PrismaStoryWithRelations): Story {
     publishedAt: prismaStory.publishedAt?.toISOString(),
     createdAt: prismaStory.createdAt.toISOString(),
     updatedAt: prismaStory.updatedAt.toISOString(),
+    promptVersion: prismaStory.promptVersion ?? undefined,
+    modelName: prismaStory.modelName ?? undefined,
+    generatedAt: prismaStory.generatedAt?.toISOString(),
   };
 
   return StorySchema.parse(story);
@@ -212,6 +222,8 @@ export async function upsertStoryDraft(input: StoryDraftInput): Promise<Story> {
             label: source.label,
             domain: source.domain,
             type: source.type.toUpperCase() as 'EXTERNAL' | 'NUO',
+            publisherName: source.publisherName,
+            retrievedAt: source.retrievedAt,
           },
         },
       };
@@ -229,6 +241,9 @@ export async function upsertStoryDraft(input: StoryDraftInput): Promise<Story> {
       heroImageSourceCredit: input.heroImage?.sourceCredit,
       status,
       tags: input.tags ?? [],
+      promptVersion: input.promptVersion,
+      modelName: input.modelName,
+      generatedAt: input.generatedAt,
       sections: {
         create: sections.map(s => ({
           type: s.type,
@@ -250,6 +265,9 @@ export async function upsertStoryDraft(input: StoryDraftInput): Promise<Story> {
       heroImageSourceCredit: input.heroImage?.sourceCredit,
       status,
       tags: input.tags ?? [],
+      promptVersion: input.promptVersion,
+      modelName: input.modelName,
+      generatedAt: input.generatedAt,
       sections: {
         deleteMany: {},
         create: sections.map(s => ({

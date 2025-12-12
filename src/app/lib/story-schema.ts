@@ -7,6 +7,8 @@ export const SourceSchema = z.object({
   label: z.string(),
   domain: z.string(),
   type: z.enum(['external', 'nuo']),
+  publisherName: z.string().optional(),
+  retrievedAt: z.string().datetime().optional(),
 });
 
 export type Source = z.infer<typeof SourceSchema>;
@@ -46,6 +48,9 @@ export const StorySchema = z.object({
   publishedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  promptVersion: z.string().optional(),
+  modelName: z.string().optional(),
+  generatedAt: z.string().datetime().optional(),
 });
 
 export type Story = z.infer<typeof StorySchema>;
