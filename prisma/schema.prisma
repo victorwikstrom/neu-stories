@@ -35,12 +35,27 @@ enum TargetType {
   SOURCE
 }
 
+// ============================================
+// INGESTION JOB STATE MACHINE
+// ============================================
+// Valid transitions:
+//   QUEUED -> FETCHING -> EXTRACTING -> READY_TO_GENERATE -> GENERATING -> SAVED
+//   Any state -> FAILED (on error)
+//
+// State descriptions:
+//   QUEUED: Job created, awaiting fetch
+//   FETCHING: Downloading URL content
+//   EXTRACTING: Parsing HTML for title/text
+//   READY_TO_GENERATE: Extraction complete, ready for LLM
+//   GENERATING: LLM creating draft story
+//   SAVED: Draft story persisted to database
+//   FAILED: Unrecoverable error occurred
+// ============================================
 enum IngestionJobStatus {
   QUEUED
   FETCHING
   EXTRACTING
-  EXTRACTED          // Extraction complete, data persisted
-  READY_TO_GENERATE  // Alias for EXTRACTED, ready for generation
+  READY_TO_GENERATE
   GENERATING
   SAVED
   FAILED

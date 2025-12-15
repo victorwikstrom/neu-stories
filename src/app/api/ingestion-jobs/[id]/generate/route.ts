@@ -11,6 +11,8 @@ import { generateNuoDraft } from '@/server/services/ingestion-generator';
 import { mapDraftToStory } from '@/server/services/draft-to-story-mapper';
 import { upsertStoryDraft } from '@/server/repositories/storyRepository';
 import { checkGenerateRateLimit } from '@/server/services/rate-limiter';
+import { isReadyToGenerate } from '@/server/services/ingestion-state-machine';
+import { db } from '@/server/db';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -55,49 +57,89 @@ export async function POST(
 
     if (!job) {
       return NextResponse.json(
-        { error: '[GENERATE] Job not found' },
+        { 
+          error: '[GENERATE] Job not found',
+          code: 'NOT_FOUND',
+        },
         { status: 404 }
       );
     }
 
-    // Validate job status - must be EXTRACTED, READY_TO_GENERATE, or GENERATING
-    // EXTRACTED/READY_TO_GENERATE means the job is ready for generation (just extracted)
-    // GENERATING means a retry or regenerate scenario
-    if (
-      job.status !== 'EXTRACTED' && 
-      job.status !== 'READY_TO_GENERATE' && 
-      job.status !== 'GENERATING'
-    ) {
+    // Idempotency check - if already SAVED, return success
+    if (job.status === 'SAVED' && job.storyId) {
       return NextResponse.json(
         { 
-          error: `[GENERATE] Job status is ${job.status}, expected EXTRACTED, READY_TO_GENERATE, or GENERATING`,
+          success: true,
+          skipped: true,
           job,
+          message: 'Generation already complete',
         },
-        { status: 400 }
+        { status: 200 }
       );
     }
 
-    // GATING RULE: Validate extracted content exists BEFORE transitioning to GENERATING
-    // Generation may only start if extractedAt != null AND both extractedTitle + extractedText are non-empty
-    if (!job.extractedAt || !job.extractedTitle || !job.extractedText || 
-        job.extractedTitle.trim() === '' || job.extractedText.trim() === '') {
-      // Do NOT set status to GENERATING - return 409 NOT_READY
+    // Validate job is ready for generation using state machine
+    if (!isReadyToGenerate(job)) {
+      // Return 409 NOT_READY (non-fatal, caller should retry after extraction)
       return NextResponse.json(
         { 
-          error: 'NOT_READY',
-          message: '[GENERATE] Extraction not complete. extractedAt, extractedTitle, and extractedText must all be present.',
+          error: '[GENERATE] Job not ready for generation. Extraction must be complete first.',
+          code: 'NOT_READY',
+          status: job.status,
           job,
         },
         { status: 409 }
       );
     }
     
-    // Transition to GENERATING status now that we've validated readiness
-    if (job.status === 'EXTRACTED' || job.status === 'READY_TO_GENERATE') {
-      await updateIngestionJob({
-        id,
-        status: 'GENERATING',
+    // Compare-and-swap: Transition to GENERATING only if currently READY_TO_GENERATE
+    if (job.status === 'READY_TO_GENERATE') {
+      const claimed = await db.ingestionJob.updateMany({
+        where: {
+          id,
+          status: 'READY_TO_GENERATE',
+          generatedAt: null,
+        },
+        data: {
+          status: 'GENERATING',
+        },
       });
+
+      if (claimed.count === 0) {
+        // Another request already claimed it - re-read and check
+        const rereadJob = await getIngestionJobById(id);
+        if (!rereadJob) {
+          return NextResponse.json(
+            { error: '[GENERATE] Job disappeared during claim', code: 'NOT_FOUND' },
+            { status: 404 }
+          );
+        }
+
+        // If already generated/saved, return success
+        if (rereadJob.status === 'SAVED' && rereadJob.storyId) {
+          return NextResponse.json(
+            { 
+              success: true,
+              skipped: true,
+              job: rereadJob,
+              message: 'Generation already complete',
+            },
+            { status: 200 }
+          );
+        }
+
+        // If status changed unexpectedly, return error
+        if (rereadJob.status !== 'GENERATING') {
+          return NextResponse.json(
+            { 
+              error: `[GENERATE] Job status changed to ${rereadJob.status} during claim`,
+              code: 'STATE_CHANGED',
+              job: rereadJob,
+            },
+            { status: 409 }
+          );
+        }
+      }
     }
 
     // Generate draft
@@ -121,6 +163,7 @@ export async function POST(
       return NextResponse.json(
         {
           error: result.error || 'Draft generation failed',
+          code: 'GENERATION_FAILED',
           job: failedJob,
         },
         { status: 500 }
@@ -154,8 +197,6 @@ export async function POST(
     });
 
   } catch (error) {
-    console.error('[GENERATE] Endpoint error:', error);
-
     // Try to update job to FAILED
     try {
       await updateIngestionJob({
@@ -164,12 +205,13 @@ export async function POST(
         errorMessage: error instanceof Error ? `[GENERATE] ${error.message}` : '[GENERATE] Unknown error',
       });
     } catch (updateError) {
-      console.error('[GENERATE] Failed to update job status:', updateError);
+      // Silently fail if unable to update status
     }
 
     return NextResponse.json(
       { 
         error: error instanceof Error ? error.message : 'Internal server error',
+        code: 'INTERNAL_ERROR',
       },
       { status: 500 }
     );

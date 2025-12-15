@@ -6,6 +6,8 @@
  * 2. Extracts main article text content
  * 3. Normalizes and cleans the extracted content
  * 4. Updates job status and metadata
+ * 
+ * This service is idempotent and uses compare-and-swap guards.
  */
 
 import * as cheerio from 'cheerio';
@@ -14,6 +16,11 @@ import {
   getIngestionJobById,
   updateIngestionJob,
 } from '@/server/repositories/ingestionJobRepository';
+import {
+  isReadyToExtract,
+  isExtractionComplete,
+  isTerminalState,
+} from './ingestion-state-machine';
 import type { IngestionJob } from '@prisma/client';
 
 /**
@@ -250,10 +257,7 @@ export async function extractIngestionJob(
   }
 
   // Step 2: Idempotency check - if extraction already done, return success
-  // Note: READY_TO_GENERATE is a valid IngestionJobStatus (see schema.prisma)
-  // If linter shows error, run: npx prisma generate
-  if (job.status === 'READY_TO_GENERATE' && job.extractedAt && job.extractedText) {
-    console.log(`[EXTRACT] Job ${jobId} already extracted (status=${job.status}), skipping`);
+  if (isExtractionComplete(job)) {
     return {
       success: true,
       job,
@@ -261,9 +265,8 @@ export async function extractIngestionJob(
     };
   }
 
-  // Also skip if job has progressed past extraction
-  if (job.status === 'GENERATING' || job.status === 'SAVED') {
-    console.log(`[EXTRACT] Job ${jobId} in terminal state (status=${job.status}), skipping`);
+  // Skip if job has progressed past extraction or is in terminal state
+  if (isTerminalState(job.status)) {
     return {
       success: true,
       job,
@@ -271,13 +274,20 @@ export async function extractIngestionJob(
     };
   }
 
-  // Step 3: Validate job status (should be EXTRACTING or FETCHING)
-  // We allow FETCHING in case fetch just completed but status update raced
-  if (job.status !== 'EXTRACTING' && job.status !== 'FETCHING') {
+  if (job.status === 'READY_TO_GENERATE' || job.status === 'GENERATING') {
+    return {
+      success: true,
+      job,
+      skipped: true,
+    };
+  }
+
+  // Step 3: Validate job is ready for extraction using state machine
+  if (!isReadyToExtract(job)) {
     return {
       success: false,
       job,
-      error: `[EXTRACT] Job status is ${job.status}, expected EXTRACTING or FETCHING`,
+      error: `[EXTRACT] Job status is ${job.status}, expected FETCHING or EXTRACTING with rawHtml`,
     };
   }
 
@@ -306,8 +316,7 @@ export async function extractIngestionJob(
         }
 
         // If already extracted, return success
-        if (rereadJob.extractedAt && rereadJob.extractedText) {
-          console.log(`[EXTRACT] Job ${jobId} already extracted by another worker, skipping`);
+        if (isExtractionComplete(rereadJob)) {
           return {
             success: true,
             job: rereadJob,
@@ -360,7 +369,6 @@ export async function extractIngestionJob(
   // Step 6: Check raw HTML size limit
   if (job.rawHtml.length > MAX_RAW_HTML_SIZE) {
     const errorMsg = `[EXTRACT] rawHtml too large: ${job.rawHtml.length} chars (max: ${MAX_RAW_HTML_SIZE})`;
-    console.error(`[EXTRACT] Failed for job ${jobId}: ${errorMsg}`);
     
     const failedJob = await updateIngestionJob({
       id: jobId,
@@ -409,8 +417,6 @@ export async function extractIngestionJob(
       );
 
       if (!validation.valid) {
-        console.error(`[EXTRACT] Failed for job ${jobId}: ${validation.error}`);
-        
         const failedJob = await updateIngestionJob({
           id: jobId,
           status: 'FAILED',
@@ -425,7 +431,6 @@ export async function extractIngestionJob(
       }
 
       // Step 11: Update job with extracted content and set status to READY_TO_GENERATE
-      // Note: READY_TO_GENERATE is a valid IngestionJobStatus (see schema.prisma)
       const updatedJob = await updateIngestionJob({
         id: jobId,
         status: 'READY_TO_GENERATE',
@@ -452,8 +457,6 @@ export async function extractIngestionJob(
     } else {
       errorMessage = '[EXTRACT] Unknown error occurred during extraction';
     }
-
-    console.error(`[EXTRACT] Failed for job ${jobId}:`, error);
 
     try {
       const failedJob = await updateIngestionJob({

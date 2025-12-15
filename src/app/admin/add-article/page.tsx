@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 
-type JobStatus = 'QUEUED' | 'FETCHING' | 'EXTRACTING' | 'EXTRACTED' | 'READY_TO_GENERATE' | 'GENERATING' | 'SAVED' | 'FAILED';
+type JobStatus = 'QUEUED' | 'FETCHING' | 'EXTRACTING' | 'READY_TO_GENERATE' | 'GENERATING' | 'SAVED' | 'FAILED';
 
 type IngestionJobResponse = {
   id: string;
@@ -63,38 +63,19 @@ export default function AddArticlePage() {
       const fetchResult = await fetchResponse.json();
       setJobStatus(fetchResult.job.status);
 
-      // Step 3: Wait for extraction to complete (fetch auto-triggers it)
-      // Poll job until status is READY_TO_GENERATE or extractedAt exists
+      // Step 3: Extract - await completion
       setJobStatus('EXTRACTING');
-      let extractionComplete = false;
-      const maxPolls = 30; // 30 seconds max
-      let pollCount = 0;
+      const extractResponse = await fetch(`/api/ingestion-jobs/${job.id}/extract`, {
+        method: 'POST',
+      });
 
-      while (!extractionComplete && pollCount < maxPolls) {
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-        pollCount++;
-
-        const pollResponse = await fetch(`/api/ingestion-jobs/${job.id}`);
-        if (!pollResponse.ok) {
-          throw new Error('Failed to poll job status');
-        }
-
-        const pollResult = await pollResponse.json();
-        setJobStatus(pollResult.status);
-
-        // Check if extraction is complete
-        if (pollResult.status === 'READY_TO_GENERATE' || 
-            pollResult.status === 'EXTRACTED' ||
-            pollResult.extractedAt) {
-          extractionComplete = true;
-        } else if (pollResult.status === 'FAILED') {
-          throw new Error(pollResult.errorMessage || 'Extraction failed');
-        }
+      if (!extractResponse.ok) {
+        const error = await extractResponse.json();
+        throw new Error(error.error || 'Failed to extract article');
       }
 
-      if (!extractionComplete) {
-        throw new Error('Extraction timeout - took longer than expected');
-      }
+      const extractResult = await extractResponse.json();
+      setJobStatus(extractResult.job.status);
 
       // Step 4: Generate - only after extraction is complete
       setJobStatus('GENERATING');
@@ -127,7 +108,6 @@ export default function AddArticlePage() {
       QUEUED: 'Queued',
       FETCHING: 'Fetching article...',
       EXTRACTING: 'Extracting content...',
-      EXTRACTED: 'Extraction complete',
       READY_TO_GENERATE: 'Ready to generate',
       GENERATING: 'Generating story...',
       SAVED: 'Saved',

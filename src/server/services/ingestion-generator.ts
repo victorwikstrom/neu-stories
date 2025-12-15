@@ -342,8 +342,6 @@ export async function generateNuoDraft(
     const parsed = parseAndValidateLLMResponse(llmResponse);
     
     if (!parsed.success) {
-      console.error('[GENERATE] Validation failed:', parsed.error);
-      
       return {
         success: false,
         error: `[GENERATE] ${parsed.error}`,
@@ -365,8 +363,6 @@ export async function generateNuoDraft(
       },
     };
   } catch (error) {
-    console.error('[GENERATE] Error:', error);
-    
     return {
       success: false,
       error: `[GENERATE] ${error instanceof Error ? error.message : 'Unknown error during generation'}`,

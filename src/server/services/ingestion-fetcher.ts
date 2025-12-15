@@ -5,6 +5,9 @@
  * 1. Validates and fetches URL content
  * 2. Stores raw HTML snapshot
  * 3. Updates job status and metadata
+ * 
+ * This service is idempotent and uses compare-and-swap guards.
+ * The UI orchestrates the subsequent extraction step.
  */
 
 import { fetchUrl, FetchError } from '@/lib/url-fetcher';
@@ -13,7 +16,9 @@ import {
   getIngestionJobById,
   updateIngestionJob,
 } from '@/server/repositories/ingestionJobRepository';
+import { isReadyToFetch } from './ingestion-state-machine';
 import type { IngestionJob } from '@prisma/client';
+import { db } from '@/server/db';
 
 /**
  * Result of processing a fetch job
@@ -22,24 +27,28 @@ export interface FetchJobResult {
   success: boolean;
   job: IngestionJob;
   error?: string;
+  skipped?: boolean; // True if fetch was skipped (already done)
 }
 
 /**
  * Fetches content for an ingestion job
  * 
- * This function:
+ * This function is idempotent:
+ * - If fetch already complete (rawHtml exists + fetchedAt set), returns success
+ * - Uses compare-and-swap to prevent concurrent fetches
+ * 
+ * Steps:
  * 1. Retrieves the job from the database
- * 2. Validates it's in the correct state
- * 3. Fetches the URL content with security protections
- * 4. Stores the raw HTML and metadata
- * 5. Updates the job status
+ * 2. Checks if fetch already done (idempotent)
+ * 3. Validates it's in the correct state with compare-and-swap
+ * 4. Fetches the URL content with security protections
+ * 5. Stores the raw HTML and metadata
+ * 6. Updates the job status to EXTRACTING
  * 
  * @param jobId - The ID of the ingestion job to process
  * @returns Result indicating success or failure
  */
 export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> {
-  const startTime = Date.now();
-
   // Step 1: Get the job
   const job = await getIngestionJobById(jobId);
   
@@ -47,8 +56,17 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
     throw new Error(`[FETCH] Ingestion job ${jobId} not found`);
   }
 
-  // Step 2: Validate job status
-  if (job.status !== 'QUEUED' && job.status !== 'FETCHING') {
+  // Step 2: Idempotency check - if fetch already done, return success
+  if (job.fetchedAt && job.rawHtml) {
+    return {
+      success: true,
+      job,
+      skipped: true,
+    };
+  }
+
+  // Step 3: Validate job status using state machine
+  if (!isReadyToFetch(job)) {
     return {
       success: false,
       job,
@@ -56,15 +74,50 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
     };
   }
 
-  // Step 3: Update status to FETCHING
-  await updateIngestionJob({
-    id: jobId,
-    status: 'FETCHING',
-    errorMessage: null,
-  });
+  // Step 4: Compare-and-swap guard - claim the job for fetching
+  // Only transition to FETCHING if currently QUEUED and not yet fetched
+  if (job.status === 'QUEUED') {
+    const claimed = await db.ingestionJob.updateMany({
+      where: {
+        id: jobId,
+        status: 'QUEUED',
+        fetchedAt: null,
+      },
+      data: {
+        status: 'FETCHING',
+        errorMessage: null,
+      },
+    });
+
+    if (claimed.count === 0) {
+      // Another request already claimed it - re-read and check
+      const rereadJob = await getIngestionJobById(jobId);
+      if (!rereadJob) {
+        throw new Error(`[FETCH] Job ${jobId} disappeared during claim`);
+      }
+
+      // If already fetched, return success
+      if (rereadJob.fetchedAt && rereadJob.rawHtml) {
+        return {
+          success: true,
+          job: rereadJob,
+          skipped: true,
+        };
+      }
+
+      // If status changed unexpectedly, return error
+      if (rereadJob.status !== 'FETCHING') {
+        return {
+          success: false,
+          job: rereadJob,
+          error: `[FETCH] Job status changed to ${rereadJob.status} during claim`,
+        };
+      }
+    }
+  }
 
   try {
-    // Step 4: Fetch the URL with security protections
+    // Step 5: Fetch the URL with security protections
     const result = await fetchUrl(job.url, {
       timeoutMs: 30000,      // 30 seconds
       maxSizeBytes: 10485760, // 10 MB
@@ -72,7 +125,8 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
       maxRedirects: 5,
     });
 
-    // Step 5: Store the raw HTML and update metadata
+    // Step 6: Store the raw HTML and update metadata
+    // Transition to EXTRACTING status (UI will orchestrate the extract call)
     const updatedJob = await updateIngestionJob({
       id: jobId,
       status: 'EXTRACTING',
@@ -83,39 +137,12 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
       errorMessage: null,
     });
 
-    // Auto-trigger extraction step
-    (async () => {
-      try {
-        const { extractIngestionJob } = await import('./ingestion-extractor');
-        const extractResult = await extractIngestionJob(jobId);
-        
-        if (!extractResult.success) {
-          console.error(`[FETCH] Auto-extraction failed for job ${jobId}:`, extractResult.error);
-        }
-      } catch (error) {
-        console.error(`[FETCH] Exception during auto-extraction for job ${jobId}:`, error);
-        
-        // Try to mark job as failed if extractor threw an exception
-        try {
-          await updateIngestionJob({
-            id: jobId,
-            status: 'FAILED',
-            errorMessage: error instanceof Error ? `[EXTRACT] ${error.message}` : '[EXTRACT] Unknown error',
-          });
-        } catch (dbError) {
-          console.error(`[FETCH] Failed to mark job ${jobId} as FAILED:`, dbError);
-        }
-      }
-    })().catch((error) => {
-      console.error(`[FETCH] Unhandled error in auto-extraction for job ${jobId}:`, error);
-    });
-
     return {
       success: true,
       job: updatedJob,
     };
   } catch (error) {
-    // Step 6: Handle errors
+    // Step 7: Handle errors
     let errorMessage: string;
     
     if (error instanceof UrlValidationError) {
@@ -135,8 +162,6 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
     } else {
       errorMessage = '[FETCH] Unknown error occurred during fetch';
     }
-
-    console.error(`[FETCH] Failed for job ${jobId}:`, error);
 
     // Update job to FAILED status
     const failedJob = await updateIngestionJob({

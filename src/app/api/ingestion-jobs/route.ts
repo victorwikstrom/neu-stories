@@ -42,14 +42,15 @@ export async function POST(request: NextRequest) {
 
     const { url, manualTitle, manualText } = validationResult.data;
     
-    // If manual content is provided, skip fetch/extract and create job with extracted content
+    // If manual content is provided, skip fetch/extract and create job ready for generation
     if (manualTitle && manualText) {
       const job = await createIngestionJob({ 
         url, 
-        status: 'EXTRACTING', // Ready for generation
+        status: 'READY_TO_GENERATE', // Manual content provided, ready for generation
         extractedTitle: manualTitle,
         extractedText: manualText,
         extractedAt: new Date(),
+        manuallyProvided: true,
       });
 
       // Return job - UI will orchestrate the generation step
