@@ -301,9 +301,17 @@ export async function generateNuoDraft(
     const systemPrompt = buildSystemPrompt(finalConfig.language);
     const userPrompt = buildUserPrompt(title, text);
 
-    // Call OpenAI
+    // Call OpenAI with 45s timeout
     const openai = getOpenAIClient();
-    const response = await openai.chat.completions.create({
+    const TIMEOUT_MS = 45000;
+    
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`OpenAI chat.completions.create timed out after ${TIMEOUT_MS}ms`));
+      }, TIMEOUT_MS);
+    });
+
+    const completionPromise = openai.chat.completions.create({
       model: finalConfig.model,
       temperature: finalConfig.temperature,
       max_tokens: finalConfig.maxTokens,
@@ -314,12 +322,14 @@ export async function generateNuoDraft(
       ],
     });
 
+    const response = await Promise.race([completionPromise, timeoutPromise]);
+
     const llmResponse = response.choices[0]?.message?.content || '';
 
     if (!llmResponse) {
       return {
         success: false,
-        error: 'Empty response from LLM',
+        error: '[GENERATE] Empty response from LLM',
         metadata: {
           promptVersion: PROMPT_VERSION,
           model: finalConfig.model,
@@ -332,9 +342,11 @@ export async function generateNuoDraft(
     const parsed = parseAndValidateLLMResponse(llmResponse);
     
     if (!parsed.success) {
+      console.error('[GENERATE] Validation failed:', parsed.error);
+      
       return {
         success: false,
-        error: parsed.error,
+        error: `[GENERATE] ${parsed.error}`,
         metadata: {
           promptVersion: PROMPT_VERSION,
           model: finalConfig.model,
@@ -353,9 +365,11 @@ export async function generateNuoDraft(
       },
     };
   } catch (error) {
+    console.error('[GENERATE] Error:', error);
+    
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error during generation',
+      error: `[GENERATE] ${error instanceof Error ? error.message : 'Unknown error during generation'}`,
       metadata: {
         promptVersion: PROMPT_VERSION,
         model: finalConfig.model,

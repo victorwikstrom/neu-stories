@@ -30,12 +30,18 @@ export interface ExtractJobResult {
 export interface ExtractConfig {
   minTextLength?: number;
   maxTextLength?: number;
+  hardMaxLength?: number; // Hard limit before trimming
 }
 
 const DEFAULT_CONFIG: Required<ExtractConfig> = {
   minTextLength: 100,
-  maxTextLength: 1000000, // 1MB of text
+  maxTextLength: 50000, // 50k chars for LLM processing
+  hardMaxLength: 100000, // 100k chars absolute max
 };
+
+// Safety limits for extraction
+const MAX_RAW_HTML_SIZE = 2_000_000; // 2 MB of HTML
+const EXTRACTION_TIMEOUT_MS = 15_000; // 15 seconds
 
 /**
  * Extracts title from HTML with precedence:
@@ -159,32 +165,49 @@ function normalizeAndCleanText(text: string): string {
 }
 
 /**
+ * Trims text to max length at word boundaries
+ * Returns trimmed text and whether it was truncated
+ */
+function trimTextToLength(
+  text: string,
+  maxLength: number
+): { text: string; wasTrimmed: boolean } {
+  if (text.length <= maxLength) {
+    return { text, wasTrimmed: false };
+  }
+
+  // Trim to maxLength and find last word boundary
+  let trimmed = text.substring(0, maxLength);
+  const lastSpace = trimmed.lastIndexOf(' ');
+  
+  if (lastSpace > maxLength * 0.9) {
+    // Only trim at word boundary if it's not too far back
+    trimmed = trimmed.substring(0, lastSpace);
+  }
+  
+  return { text: trimmed.trim(), wasTrimmed: true };
+}
+
+/**
  * Validates extracted content meets minimum requirements
  */
 function validateExtractedContent(
   title: string | null,
   text: string | null,
   config: Required<ExtractConfig>
-): { valid: boolean; error?: string } {
+): { valid: boolean; error?: string; warning?: string } {
   if (!title || title.length === 0) {
-    return { valid: false, error: 'No title could be extracted' };
+    return { valid: false, error: '[EXTRACT] No title could be extracted' };
   }
 
   if (!text || text.length === 0) {
-    return { valid: false, error: 'No text content could be extracted' };
+    return { valid: false, error: '[EXTRACT] No text content could be extracted' };
   }
 
   if (text.length < config.minTextLength) {
     return {
       valid: false,
-      error: `Text too short: ${text.length} chars (minimum: ${config.minTextLength})`,
-    };
-  }
-
-  if (text.length > config.maxTextLength) {
-    return {
-      valid: false,
-      error: `Text too long: ${text.length} chars (maximum: ${config.maxTextLength})`,
+      error: `[EXTRACT] Text too short: ${text.length} chars (minimum: ${config.minTextLength})`,
     };
   }
 
@@ -215,7 +238,7 @@ export async function extractIngestionJob(
   const job = await getIngestionJobById(jobId);
   
   if (!job) {
-    throw new Error(`Ingestion job ${jobId} not found`);
+    throw new Error(`[EXTRACT] Ingestion job ${jobId} not found`);
   }
 
   // Step 2: Validate job status
@@ -223,7 +246,7 @@ export async function extractIngestionJob(
     return {
       success: false,
       job,
-      error: `Job status is ${job.status}, expected EXTRACTING`,
+      error: `[EXTRACT] Job status is ${job.status}, expected EXTRACTING`,
     };
   }
 
@@ -232,81 +255,129 @@ export async function extractIngestionJob(
     const failedJob = await updateIngestionJob({
       id: jobId,
       status: 'FAILED',
-      errorMessage: 'No raw HTML available for extraction',
+      errorMessage: '[EXTRACT] No raw HTML available for extraction',
     });
 
     return {
       success: false,
       job: failedJob,
-      error: 'No raw HTML available for extraction',
+      error: '[EXTRACT] No raw HTML available for extraction',
+    };
+  }
+
+  // Step 4: Check raw HTML size limit
+  if (job.rawHtml.length > MAX_RAW_HTML_SIZE) {
+    const errorMsg = `[EXTRACT] rawHtml too large: ${job.rawHtml.length} chars (max: ${MAX_RAW_HTML_SIZE})`;
+    console.error(`[EXTRACT] Failed for job ${jobId}: ${errorMsg}`);
+    
+    const failedJob = await updateIngestionJob({
+      id: jobId,
+      status: 'FAILED',
+      errorMessage: errorMsg,
+    });
+
+    return {
+      success: false,
+      job: failedJob,
+      error: errorMsg,
     };
   }
 
   try {
-    // Step 4: Parse HTML
-    const $ = cheerio.load(job.rawHtml);
+    // Create timeout promise
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('Extraction timed out'));
+      }, EXTRACTION_TIMEOUT_MS);
+    });
 
-    // Step 5: Extract title and text
-    const extractedTitle = extractTitle($);
-    const extractedText = extractText($);
+    // Create extraction promise
+    const extractionPromise = (async () => {
+      // Step 5: Parse HTML
+      const $ = cheerio.load(job.rawHtml!);
 
-    // Step 6: Validate extracted content
-    const validation = validateExtractedContent(
-      extractedTitle,
-      extractedText,
-      finalConfig
-    );
+      // Step 6: Extract title and text
+      const extractedTitle = extractTitle($);
+      let extractedText = extractText($);
 
-    if (!validation.valid) {
+      // Step 7: Apply hard limit trimming if needed
+      if (extractedText && extractedText.length > finalConfig.hardMaxLength) {
+        const trimResult = trimTextToLength(extractedText, finalConfig.maxTextLength);
+        extractedText = trimResult.text;
+      } else if (extractedText && extractedText.length > finalConfig.maxTextLength) {
+        const trimResult = trimTextToLength(extractedText, finalConfig.maxTextLength);
+        extractedText = trimResult.text;
+      }
+
+      // Step 8: Validate extracted content
+      const validation = validateExtractedContent(
+        extractedTitle,
+        extractedText,
+        finalConfig
+      );
+
+      if (!validation.valid) {
+        console.error(`[EXTRACT] Failed for job ${jobId}: ${validation.error}`);
+        
+        const failedJob = await updateIngestionJob({
+          id: jobId,
+          status: 'FAILED',
+          errorMessage: validation.error,
+        });
+
+        return {
+          success: false,
+          job: failedJob,
+          error: validation.error,
+        };
+      }
+
+      // Step 9: Update job with extracted content and set status to READY_TO_GENERATE
+      const updatedJob = await updateIngestionJob({
+        id: jobId,
+        status: 'READY_TO_GENERATE',
+        extractedTitle,
+        extractedText,
+        extractedAt: new Date(),
+        errorMessage: null,
+      });
+
+      return {
+        success: true,
+        job: updatedJob,
+      };
+    })();
+
+    // Race extraction against timeout
+    return await Promise.race([extractionPromise, timeoutPromise]);
+  } catch (error) {
+    // Step 9: Handle errors
+    let errorMessage: string;
+    
+    if (error instanceof Error) {
+      errorMessage = `[EXTRACT] ${error.message}`;
+    } else {
+      errorMessage = '[EXTRACT] Unknown error occurred during extraction';
+    }
+
+    console.error(`[EXTRACT] Failed for job ${jobId}:`, error);
+
+    try {
       const failedJob = await updateIngestionJob({
         id: jobId,
         status: 'FAILED',
-        errorMessage: validation.error,
+        errorMessage,
       });
 
       return {
         success: false,
         job: failedJob,
-        error: validation.error,
+        error: errorMessage,
       };
+    } catch (dbError) {
+      console.error(`[EXTRACT] Failed to update job ${jobId} to FAILED status:`, dbError);
+      throw new Error(`[EXTRACT] Failed to mark job as failed: ${dbError instanceof Error ? dbError.message : 'Unknown error'}`);
     }
-
-    // Step 7: Update job with extracted content and move to GENERATING
-    const updatedJob = await updateIngestionJob({
-      id: jobId,
-      status: 'GENERATING',
-      extractedTitle,
-      extractedText,
-      extractedAt: new Date(),
-      errorMessage: null,
-    });
-
-    return {
-      success: true,
-      job: updatedJob,
-    };
-  } catch (error) {
-    // Step 8: Handle errors
-    let errorMessage: string;
-    
-    if (error instanceof Error) {
-      errorMessage = `Extraction error: ${error.message}`;
-    } else {
-      errorMessage = 'Unknown error occurred during extraction';
-    }
-
-    // Update job to FAILED status
-    const failedJob = await updateIngestionJob({
-      id: jobId,
-      status: 'FAILED',
-      errorMessage,
-    });
-
-    return {
-      success: false,
-      job: failedJob,
-      error: errorMessage,
-    };
   }
 }
 

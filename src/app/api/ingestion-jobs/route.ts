@@ -1,11 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createIngestionJob } from '@/server/repositories/ingestionJobRepository';
-import { fetchIngestionJob } from '@/server/services/ingestion-fetcher';
 
 const CreateIngestionJobSchema = z.object({
   url: z.string().url('Invalid URL format'),
-});
+  manualTitle: z.string().min(1).optional(),
+  manualText: z.string().min(50).optional(),
+}).refine(
+  (data) => {
+    // If manualTitle is provided, manualText must also be provided (and vice versa)
+    if (data.manualTitle || data.manualText) {
+      return data.manualTitle && data.manualText;
+    }
+    return true;
+  },
+  {
+    message: 'Both manualTitle and manualText must be provided if using manual entry',
+  }
+);
 
 export async function POST(request: NextRequest) {
   try {
@@ -28,15 +40,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { url } = validationResult.data;
-    const job = await createIngestionJob({ url, status: 'QUEUED' });
+    const { url, manualTitle, manualText } = validationResult.data;
+    
+    // If manual content is provided, skip fetch/extract and create job with extracted content
+    if (manualTitle && manualText) {
+      const job = await createIngestionJob({ 
+        url, 
+        status: 'EXTRACTING', // Ready for generation
+        extractedTitle: manualTitle,
+        extractedText: manualText,
+        extractedAt: new Date(),
+      });
 
-    // Trigger the fetch step asynchronously
-    // In production, this should be done via a message queue or background worker
-    // For now, we trigger it directly but don't wait for completion
-    fetchIngestionJob(job.id).catch((error) => {
-      console.error(`Failed to fetch ingestion job ${job.id}:`, error);
-    });
+      // Return job - UI will orchestrate the generation step
+      return NextResponse.json({
+        id: job.id,
+        url: job.url,
+        status: job.status,
+        createdAt: job.createdAt.toISOString(),
+      }, { status: 201 });
+    }
+
+    // Normal flow: create job in QUEUED state
+    // UI will orchestrate fetch -> extract -> generate steps
+    const job = await createIngestionJob({ url, status: 'QUEUED' });
 
     return NextResponse.json({
       id: job.id,

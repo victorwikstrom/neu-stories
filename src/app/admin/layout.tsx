@@ -21,6 +21,12 @@ export default function AdminLayout({
             </h1>
             <div className="flex gap-6">
               <Link
+                href="/admin"
+                className="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+              >
+                Dashboard
+              </Link>
+              <Link
                 href="/admin/add-article"
                 className="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
               >

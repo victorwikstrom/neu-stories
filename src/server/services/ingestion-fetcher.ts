@@ -38,11 +38,13 @@ export interface FetchJobResult {
  * @returns Result indicating success or failure
  */
 export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> {
+  const startTime = Date.now();
+
   // Step 1: Get the job
   const job = await getIngestionJobById(jobId);
   
   if (!job) {
-    throw new Error(`Ingestion job ${jobId} not found`);
+    throw new Error(`[FETCH] Ingestion job ${jobId} not found`);
   }
 
   // Step 2: Validate job status
@@ -50,7 +52,7 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
     return {
       success: false,
       job,
-      error: `Job status is ${job.status}, expected QUEUED or FETCHING`,
+      error: `[FETCH] Job status is ${job.status}, expected QUEUED or FETCHING`,
     };
   }
 
@@ -81,6 +83,33 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
       errorMessage: null,
     });
 
+    // Auto-trigger extraction step
+    (async () => {
+      try {
+        const { extractIngestionJob } = await import('./ingestion-extractor');
+        const extractResult = await extractIngestionJob(jobId);
+        
+        if (!extractResult.success) {
+          console.error(`[FETCH] Auto-extraction failed for job ${jobId}:`, extractResult.error);
+        }
+      } catch (error) {
+        console.error(`[FETCH] Exception during auto-extraction for job ${jobId}:`, error);
+        
+        // Try to mark job as failed if extractor threw an exception
+        try {
+          await updateIngestionJob({
+            id: jobId,
+            status: 'FAILED',
+            errorMessage: error instanceof Error ? `[EXTRACT] ${error.message}` : '[EXTRACT] Unknown error',
+          });
+        } catch (dbError) {
+          console.error(`[FETCH] Failed to mark job ${jobId} as FAILED:`, dbError);
+        }
+      }
+    })().catch((error) => {
+      console.error(`[FETCH] Unhandled error in auto-extraction for job ${jobId}:`, error);
+    });
+
     return {
       success: true,
       job: updatedJob,
@@ -90,9 +119,9 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
     let errorMessage: string;
     
     if (error instanceof UrlValidationError) {
-      errorMessage = `URL validation failed: ${error.message}`;
+      errorMessage = `[FETCH] URL validation failed: ${error.message}`;
     } else if (error instanceof FetchError) {
-      errorMessage = `Fetch failed (${error.code}): ${error.message}`;
+      errorMessage = `[FETCH] Fetch failed (${error.code}): ${error.message}`;
       
       // If we got an HTTP status, store it
       if (error.status) {
@@ -102,10 +131,12 @@ export async function fetchIngestionJob(jobId: string): Promise<FetchJobResult> 
         });
       }
     } else if (error instanceof Error) {
-      errorMessage = `Unexpected error: ${error.message}`;
+      errorMessage = `[FETCH] Unexpected error: ${error.message}`;
     } else {
-      errorMessage = 'Unknown error occurred during fetch';
+      errorMessage = '[FETCH] Unknown error occurred during fetch';
     }
+
+    console.error(`[FETCH] Failed for job ${jobId}:`, error);
 
     // Update job to FAILED status
     const failedJob = await updateIngestionJob({

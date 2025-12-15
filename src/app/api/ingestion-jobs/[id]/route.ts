@@ -17,32 +17,24 @@ export async function GET(
       );
     }
 
-    // If job is SAVED, try to find the associated story
-    let storySlug: string | undefined;
-    if (job.status === 'SAVED') {
-      // Look for a story that was created around the same time as the job
-      // In a production system, you'd want a direct relationship between IngestionJob and Story
-      const story = await db.story.findFirst({
-        where: {
-          createdAt: {
-            gte: job.createdAt,
+    // Fetch the associated story if it exists
+    let story = null;
+    // @ts-expect-error - storyId exists in schema but Prisma types may need refresh
+    if (job.storyId) {
+      story = await db.story.findUnique({
+        // @ts-expect-error - storyId exists in schema but Prisma types may need refresh
+        where: { id: job.storyId },
+        include: {
+          sections: {
+            orderBy: { order: 'asc' },
           },
           storySources: {
-            some: {
-              source: {
-                url: job.url,
-              },
+            include: {
+              source: true,
             },
           },
         },
-        orderBy: {
-          createdAt: 'asc',
-        },
       });
-
-      if (story) {
-        storySlug = story.slug;
-      }
     }
 
     return NextResponse.json({
@@ -52,7 +44,33 @@ export async function GET(
       errorMessage: job.errorMessage,
       createdAt: job.createdAt.toISOString(),
       updatedAt: job.updatedAt.toISOString(),
-      storySlug,
+      fetchedAt: job.fetchedAt?.toISOString(),
+      extractedAt: job.extractedAt?.toISOString(),
+      generatedAt: job.generatedAt?.toISOString(),
+      httpStatus: job.httpStatus,
+      contentType: job.contentType,
+      // @ts-expect-error - extractedTitle exists in schema but Prisma types may need refresh
+      extractedTitle: job.extractedTitle,
+      // @ts-expect-error - extractedText exists in schema but Prisma types may need refresh
+      extractedText: job.extractedText,
+      manuallyProvided: job.manuallyProvided,
+      // @ts-expect-error - storyId exists in schema but Prisma types may need refresh
+      storyId: job.storyId,
+      story: story ? {
+        id: story.id,
+        slug: story.slug,
+        headline: story.headline,
+        summary: story.summary,
+        status: story.status,
+        sections: story.sections,
+        primarySources: story.storySources.map(ss => ss.source),
+        tags: story.tags,
+        promptVersion: story.promptVersion,
+        modelName: story.modelName,
+        generatedAt: story.generatedAt?.toISOString(),
+        createdAt: story.createdAt.toISOString(),
+        updatedAt: story.updatedAt.toISOString(),
+      } : null,
     });
   } catch (error) {
     console.error('Error fetching ingestion job:', error);

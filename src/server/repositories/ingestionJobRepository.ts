@@ -4,6 +4,10 @@ import type { IngestionJob, IngestionJobStatus } from '@prisma/client';
 export type CreateIngestionJobParams = {
   url: string;
   status?: IngestionJobStatus;
+  extractedTitle?: string;
+  extractedText?: string;
+  extractedAt?: Date;
+  manuallyProvided?: boolean;
 };
 
 export type UpdateIngestionJobParams = {
@@ -13,24 +17,30 @@ export type UpdateIngestionJobParams = {
   fetchedAt?: Date | null;
   extractedAt?: Date | null;
   generatedAt?: Date | null;
+  lastHeartbeatAt?: Date | null;
   httpStatus?: number | null;
   contentType?: string | null;
   rawHtml?: string | null;
   extractedTitle?: string | null;
   extractedText?: string | null;
   storyId?: string | null;
+  manuallyProvided?: boolean;
 };
 
 /**
  * Creates a new ingestion job.
  */
 export async function createIngestionJob(params: CreateIngestionJobParams): Promise<IngestionJob> {
-  const { url, status = 'QUEUED' } = params;
+  const { url, status = 'QUEUED', extractedTitle, extractedText, extractedAt, manuallyProvided = false } = params;
 
   const job = await db.ingestionJob.create({
     data: {
       url,
       status,
+      extractedTitle,
+      extractedText,
+      extractedAt,
+      manuallyProvided,
     },
   });
 

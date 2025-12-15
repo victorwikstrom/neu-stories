@@ -10,11 +10,15 @@ import { getIngestionJobById, updateIngestionJob } from '@/server/repositories/i
 import { generateNuoDraft } from '@/server/services/ingestion-generator';
 import { mapDraftToStory } from '@/server/services/draft-to-story-mapper';
 import { upsertStoryDraft } from '@/server/repositories/storyRepository';
+import { checkGenerateRateLimit } from '@/server/services/rate-limiter';
+
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 interface RouteParams {
-  params: {
+  params: Promise<{
     id: string;
-  };
+  }>;
 }
 
 /**
@@ -26,53 +30,79 @@ export async function POST(
   request: NextRequest,
   { params }: RouteParams
 ): Promise<NextResponse> {
-  const { id } = params;
+  const { id } = await params;
 
   try {
+    // Check rate limit first
+    const rateLimitCheck = checkGenerateRateLimit(id);
+    if (!rateLimitCheck.allowed) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded. Please wait before retrying.',
+          retryAfterMs: rateLimitCheck.remainingMs,
+        },
+        { 
+          status: 429,
+          headers: {
+            'Retry-After': Math.ceil((rateLimitCheck.remainingMs || 0) / 1000).toString(),
+          },
+        }
+      );
+    }
+
     // Get the job
     const job = await getIngestionJobById(id);
 
     if (!job) {
       return NextResponse.json(
-        { error: 'Job not found' },
+        { error: '[GENERATE] Job not found' },
         { status: 404 }
       );
     }
 
-    // Validate job status
-    if (job.status !== 'GENERATING') {
+    // Validate job status - must be EXTRACTED, READY_TO_GENERATE, or GENERATING
+    // EXTRACTED/READY_TO_GENERATE means the job is ready for generation (just extracted)
+    // GENERATING means a retry or regenerate scenario
+    if (
+      job.status !== 'EXTRACTED' && 
+      job.status !== 'READY_TO_GENERATE' && 
+      job.status !== 'GENERATING'
+    ) {
       return NextResponse.json(
         { 
-          error: `Job status is ${job.status}, expected GENERATING`,
+          error: `[GENERATE] Job status is ${job.status}, expected EXTRACTED, READY_TO_GENERATE, or GENERATING`,
           job,
         },
         { status: 400 }
       );
     }
 
-    // Validate extracted content exists
-    // @ts-expect-error - extractedTitle and extractedText exist in schema but Prisma client may need restart
-    if (!job.extractedTitle || !job.extractedText) {
-      const failedJob = await updateIngestionJob({
-        id,
-        status: 'FAILED',
-        errorMessage: 'Missing extracted title or text',
-      });
-
+    // GATING RULE: Validate extracted content exists BEFORE transitioning to GENERATING
+    // Generation may only start if extractedAt != null AND both extractedTitle + extractedText are non-empty
+    if (!job.extractedAt || !job.extractedTitle || !job.extractedText || 
+        job.extractedTitle.trim() === '' || job.extractedText.trim() === '') {
+      // Do NOT set status to GENERATING - return 409 NOT_READY
       return NextResponse.json(
         { 
-          error: 'Missing extracted title or text',
-          job: failedJob,
+          error: 'NOT_READY',
+          message: '[GENERATE] Extraction not complete. extractedAt, extractedTitle, and extractedText must all be present.',
+          job,
         },
-        { status: 400 }
+        { status: 409 }
       );
+    }
+    
+    // Transition to GENERATING status now that we've validated readiness
+    if (job.status === 'EXTRACTED' || job.status === 'READY_TO_GENERATE') {
+      await updateIngestionJob({
+        id,
+        status: 'GENERATING',
+      });
     }
 
     // Generate draft
     const result = await generateNuoDraft(
-      // @ts-expect-error - extractedTitle and extractedText exist in schema but Prisma client may need restart
       job.extractedTitle,
-      // @ts-expect-error - extractedTitle and extractedText exist in schema but Prisma client may need restart
       job.extractedText,
       {
         language: 'sv',
@@ -85,7 +115,7 @@ export async function POST(
       const failedJob = await updateIngestionJob({
         id,
         status: 'FAILED',
-        errorMessage: result.error || 'Draft generation failed',
+        errorMessage: `[GENERATE] ${result.error || 'Draft generation failed'}`,
       });
 
       return NextResponse.json(
@@ -124,17 +154,17 @@ export async function POST(
     });
 
   } catch (error) {
-    console.error('Generate endpoint error:', error);
+    console.error('[GENERATE] Endpoint error:', error);
 
     // Try to update job to FAILED
     try {
       await updateIngestionJob({
         id,
         status: 'FAILED',
-        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+        errorMessage: error instanceof Error ? `[GENERATE] ${error.message}` : '[GENERATE] Unknown error',
       });
     } catch (updateError) {
-      console.error('Failed to update job status:', updateError);
+      console.error('[GENERATE] Failed to update job status:', updateError);
     }
 
     return NextResponse.json(

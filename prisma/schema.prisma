@@ -39,6 +39,8 @@ enum IngestionJobStatus {
   QUEUED
   FETCHING
   EXTRACTING
+  EXTRACTED          // Extraction complete, data persisted
+  READY_TO_GENERATE  // Alias for EXTRACTED, ready for generation
   GENERATING
   SAVED
   FAILED
@@ -149,11 +151,12 @@ model IngestionJob {
   updatedAt    DateTime             @updatedAt
   
   // Optional metadata
-  fetchedAt    DateTime?
-  extractedAt  DateTime?
-  generatedAt  DateTime?
-  httpStatus   Int?
-  contentType  String?
+  fetchedAt        DateTime?
+  extractedAt      DateTime?
+  generatedAt      DateTime?
+  lastHeartbeatAt  DateTime?
+  httpStatus       Int?
+  contentType      String?
   
   // Raw HTML snapshot from fetching
   rawHtml      String?
@@ -161,6 +164,9 @@ model IngestionJob {
   // Extracted content from HTML
   extractedTitle String?
   extractedText  String?
+  
+  // Manual fallback flag
+  manuallyProvided Boolean @default(false)
   
   // Reference to generated story
   storyId      String?

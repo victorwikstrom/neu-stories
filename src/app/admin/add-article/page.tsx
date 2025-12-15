@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
-type JobStatus = 'QUEUED' | 'FETCHING' | 'EXTRACTING' | 'GENERATING' | 'SAVED' | 'FAILED';
+type JobStatus = 'QUEUED' | 'FETCHING' | 'EXTRACTING' | 'EXTRACTED' | 'READY_TO_GENERATE' | 'GENERATING' | 'SAVED' | 'FAILED';
 
 type IngestionJobResponse = {
   id: string;
@@ -21,35 +21,6 @@ export default function AddArticlePage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [storySlug, setStorySlug] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!jobId || jobStatus === 'SAVED' || jobStatus === 'FAILED') {
-      return;
-    }
-
-    const pollInterval = setInterval(async () => {
-      try {
-        const response = await fetch(`/api/ingestion-jobs/${jobId}`);
-        if (response.ok) {
-          const job: IngestionJobResponse = await response.json();
-          setJobStatus(job.status);
-          if (job.errorMessage) {
-            setErrorMessage(job.errorMessage);
-          }
-          if (job.storySlug) {
-            setStorySlug(job.storySlug);
-          }
-          if (job.status === 'SAVED' || job.status === 'FAILED') {
-            clearInterval(pollInterval);
-          }
-        }
-      } catch (error) {
-        console.error('Error polling job status:', error);
-      }
-    }, 2000);
-
-    return () => clearInterval(pollInterval);
-  }, [jobId, jobStatus]);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
@@ -59,7 +30,9 @@ export default function AddArticlePage() {
     setStorySlug(null);
 
     try {
-      const response = await fetch('/api/ingestion-jobs', {
+      // Step 1: Create job
+      setJobStatus('QUEUED');
+      const createResponse = await fetch('/api/ingestion-jobs', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -67,15 +40,72 @@ export default function AddArticlePage() {
         body: JSON.stringify({ url }),
       });
 
-      if (!response.ok) {
-        const error = await response.json();
+      if (!createResponse.ok) {
+        const error = await createResponse.json();
         throw new Error(error.error || 'Failed to create ingestion job');
       }
 
-      const job: IngestionJobResponse = await response.json();
+      const job: IngestionJobResponse = await createResponse.json();
       setJobId(job.id);
       setJobStatus(job.status);
+
+      // Step 2: Fetch - await completion
+      setJobStatus('FETCHING');
+      const fetchResponse = await fetch(`/api/ingestion-jobs/${job.id}/fetch`, {
+        method: 'POST',
+      });
+
+      if (!fetchResponse.ok) {
+        const error = await fetchResponse.json();
+        throw new Error(error.error || 'Failed to fetch article');
+      }
+
+      const fetchResult = await fetchResponse.json();
+      setJobStatus(fetchResult.job.status);
+
+      // Step 3: Extract - await completion
+      setJobStatus('EXTRACTING');
+      const extractResponse = await fetch(`/api/ingestion-jobs/${job.id}/extract`, {
+        method: 'POST',
+      });
+
+      if (!extractResponse.ok) {
+        const error = await extractResponse.json();
+        throw new Error(error.error || 'Failed to extract content');
+      }
+
+      const extractResult = await extractResponse.json();
+      setJobStatus(extractResult.job.status);
+
+      // Ensure extraction is complete before proceeding
+      // Status should be READY_TO_GENERATE or EXTRACTED
+      if (extractResult.job.status !== 'READY_TO_GENERATE' && 
+          extractResult.job.status !== 'EXTRACTED') {
+        throw new Error(
+          `Extraction did not complete successfully. Status: ${extractResult.job.status}`
+        );
+      }
+
+      // Step 4: Generate - only after extraction is complete
+      setJobStatus('GENERATING');
+      const generateResponse = await fetch(`/api/ingestion-jobs/${job.id}/generate`, {
+        method: 'POST',
+      });
+
+      if (!generateResponse.ok) {
+        const error = await generateResponse.json();
+        throw new Error(error.error || 'Failed to generate story');
+      }
+
+      const generateResult = await generateResponse.json();
+      setJobStatus(generateResult.job.status);
+      
+      if (generateResult.story?.slug) {
+        setStorySlug(generateResult.story.slug);
+      }
+
     } catch (error) {
+      setJobStatus('FAILED');
       setErrorMessage(error instanceof Error ? error.message : 'An error occurred');
     } finally {
       setIsSubmitting(false);
@@ -87,6 +117,8 @@ export default function AddArticlePage() {
       QUEUED: 'Queued',
       FETCHING: 'Fetching article...',
       EXTRACTING: 'Extracting content...',
+      EXTRACTED: 'Extraction complete',
+      READY_TO_GENERATE: 'Ready to generate',
       GENERATING: 'Generating story...',
       SAVED: 'Saved',
       FAILED: 'Failed',
@@ -170,16 +202,16 @@ export default function AddArticlePage() {
                 </div>
               )}
 
-              {jobStatus === 'SAVED' && storySlug && (
+              {jobStatus === 'SAVED' && jobId && (
                 <div className="mt-4 rounded-md bg-green-50 p-4 dark:bg-green-950/20">
                   <p className="text-sm font-medium text-green-800 dark:text-green-200">
                     Story created successfully!
                   </p>
                   <a
-                    href={`/admin/stories/${storySlug}`}
+                    href={`/admin/jobs/${jobId}`}
                     className="mt-2 inline-block text-sm font-medium text-green-700 underline hover:text-green-600 dark:text-green-300 dark:hover:text-green-200"
                   >
-                    View draft story →
+                    View job & draft story →
                   </a>
                 </div>
               )}

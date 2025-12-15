@@ -64,48 +64,62 @@ export function mapDraftToStory(
     generatedAt: Date;
   }
 ): StoryDraftInput {
-  const slug = generateSlug(draft.headline);
-  const domain = extractDomain(sourceUrl);
-  const sourceLabel = generateSourceLabel(sourceUrl);
+  const startTime = Date.now();
+  console.log(`[MAP] Mapping draft to story format (headline: "${draft.headline}")`);
 
-  // Create sections from what_happened and background
-  const sections: StoryDraftInput['sections'] = [
-    // Map what_happened to sections
-    ...draft.what_happened.map((body, index) => ({
-      type: 'what_happened' as const,
-      body,
-      order: index,
-    })),
-    // Map background to sections
-    ...draft.background.map((body, index) => ({
-      type: 'background' as const,
-      body,
-      order: draft.what_happened.length + index,
-    })),
-  ];
+  try {
+    const slug = generateSlug(draft.headline);
+    const domain = extractDomain(sourceUrl);
+    const sourceLabel = generateSourceLabel(sourceUrl);
 
-  // Create the primary source
-  const primarySources: StoryDraftInput['primarySources'] = [
-    {
-      url: sourceUrl,
-      label: sourceLabel,
-      domain: domain,
-      type: 'external' as const,
-      retrievedAt: new Date(),
-    },
-  ];
+    // Create sections from what_happened and background
+    const sections: StoryDraftInput['sections'] = [
+      // Map what_happened to sections
+      ...draft.what_happened.map((body, index) => ({
+        type: 'what_happened' as const,
+        body,
+        order: index,
+      })),
+      // Map background to sections
+      ...draft.background.map((body, index) => ({
+        type: 'background' as const,
+        body,
+        order: draft.what_happened.length + index,
+      })),
+    ];
 
-  return {
-    slug,
-    headline: draft.headline,
-    summary: draft.short_summary,
-    status: 'draft',
-    sections,
-    primarySources,
-    tags: [],
-    promptVersion: metadata.promptVersion,
-    modelName: metadata.model,
-    generatedAt: metadata.generatedAt,
-  };
+    // Create the primary source
+    const primarySources: StoryDraftInput['primarySources'] = [
+      {
+        url: sourceUrl,
+        label: sourceLabel,
+        domain: domain,
+        type: 'external' as const,
+        retrievedAt: new Date(),
+      },
+    ];
+
+    const result = {
+      slug,
+      headline: draft.headline,
+      summary: draft.short_summary,
+      status: 'draft',
+      sections,
+      primarySources,
+      tags: [],
+      promptVersion: metadata.promptVersion,
+      modelName: metadata.model,
+      generatedAt: metadata.generatedAt,
+    };
+
+    const duration = Date.now() - startTime;
+    console.log(`[MAP] Completed mapping in ${duration}ms (slug: ${slug}, ${sections.length} sections)`);
+
+    return result;
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error(`[MAP] Error in ${duration}ms:`, error);
+    throw new Error(`[MAP] ${error instanceof Error ? error.message : 'Unknown mapping error'}`);
+  }
 }
 
