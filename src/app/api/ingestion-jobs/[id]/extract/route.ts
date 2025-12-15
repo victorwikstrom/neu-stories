@@ -31,8 +31,10 @@ export async function POST(
       );
     }
 
+    // Return 200 for both new extractions and idempotent skips
     return NextResponse.json({
       success: true,
+      skipped: result.skipped || false,
       job: {
         id: result.job.id,
         url: result.job.url,

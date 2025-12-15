@@ -34,6 +34,9 @@ async function processUrl(url: string) {
     console.log('  - HTML Size:', fetchResult.job.rawHtml?.length, 'bytes');
     
     // Step 3: Extract title and text
+    // Note: Fetch auto-triggers extraction in the background, but calling explicitly
+    // is also safe due to idempotency. This call may return skipped=true if
+    // the auto-triggered extraction already completed.
     const extractResult = await extractIngestionJob(fetchResult.job.id);
     
     if (!extractResult.success) {
@@ -41,7 +44,8 @@ async function processUrl(url: string) {
       return;
     }
     
-    console.log('✓ Extraction completed - Status:', extractResult.job.status);
+    const skippedNote = extractResult.skipped ? ' (skipped - already extracted)' : '';
+    console.log('✓ Extraction completed - Status:', extractResult.job.status + skippedNote);
     console.log('  - Title:', extractResult.job.extractedTitle);
     console.log('  - Text Length:', extractResult.job.extractedText?.length, 'chars');
     console.log('  - Preview:', extractResult.job.extractedText?.substring(0, 100) + '...');

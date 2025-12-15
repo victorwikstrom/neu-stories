@@ -9,6 +9,7 @@
  */
 
 import * as cheerio from 'cheerio';
+import { db } from '@/server/db';
 import {
   getIngestionJobById,
   updateIngestionJob,
@@ -22,6 +23,7 @@ export interface ExtractJobResult {
   success: boolean;
   job: IngestionJob;
   error?: string;
+  skipped?: boolean; // True if extraction was skipped (already done)
 }
 
 /**
@@ -217,12 +219,18 @@ function validateExtractedContent(
 /**
  * Extracts content from an ingestion job
  * 
+ * This function is idempotent:
+ * - If extraction already complete (READY_TO_GENERATE with extractedAt), returns success
+ * - If job is in terminal state (GENERATING, SAVED), returns success
+ * - Otherwise performs extraction
+ * 
  * This function:
  * 1. Retrieves the job from the database
- * 2. Validates it's in the correct state
- * 3. Extracts title and text from raw HTML
- * 4. Validates extracted content
- * 5. Updates the job status to GENERATING
+ * 2. Checks if extraction already done (idempotent)
+ * 3. Validates it's in the correct state with compare-and-swap
+ * 4. Extracts title and text from raw HTML
+ * 5. Validates extracted content
+ * 6. Updates the job status to READY_TO_GENERATE
  * 
  * @param jobId - The ID of the ingestion job to process
  * @param config - Optional configuration for extraction
@@ -241,7 +249,91 @@ export async function extractIngestionJob(
     throw new Error(`[EXTRACT] Ingestion job ${jobId} not found`);
   }
 
-  // Step 2: Validate job status
+  // Step 2: Idempotency check - if extraction already done, return success
+  // Note: READY_TO_GENERATE is a valid IngestionJobStatus (see schema.prisma)
+  // If linter shows error, run: npx prisma generate
+  if (job.status === 'READY_TO_GENERATE' && job.extractedAt && job.extractedText) {
+    console.log(`[EXTRACT] Job ${jobId} already extracted (status=${job.status}), skipping`);
+    return {
+      success: true,
+      job,
+      skipped: true,
+    };
+  }
+
+  // Also skip if job has progressed past extraction
+  if (job.status === 'GENERATING' || job.status === 'SAVED') {
+    console.log(`[EXTRACT] Job ${jobId} in terminal state (status=${job.status}), skipping`);
+    return {
+      success: true,
+      job,
+      skipped: true,
+    };
+  }
+
+  // Step 3: Validate job status (should be EXTRACTING or FETCHING)
+  // We allow FETCHING in case fetch just completed but status update raced
+  if (job.status !== 'EXTRACTING' && job.status !== 'FETCHING') {
+    return {
+      success: false,
+      job,
+      error: `[EXTRACT] Job status is ${job.status}, expected EXTRACTING or FETCHING`,
+    };
+  }
+
+  // Step 4: Compare-and-swap guard - only start extraction if not already started
+  // Update status to EXTRACTING only if current status is FETCHING or EXTRACTING and extractedAt is null
+  if (job.status === 'FETCHING') {
+    try {
+      // Try to claim the extraction by updating to EXTRACTING
+      const claimed = await db.ingestionJob.updateMany({
+        where: {
+          id: jobId,
+          status: 'FETCHING',
+          extractedAt: null,
+        },
+        data: {
+          status: 'EXTRACTING',
+        },
+      });
+
+      if (claimed.count === 0) {
+        // Another worker already claimed it or extraction already done
+        // Re-read job and check status
+        const rereadJob = await getIngestionJobById(jobId);
+        if (!rereadJob) {
+          throw new Error(`[EXTRACT] Job ${jobId} disappeared during claim`);
+        }
+
+        // If already extracted, return success
+        if (rereadJob.extractedAt && rereadJob.extractedText) {
+          console.log(`[EXTRACT] Job ${jobId} already extracted by another worker, skipping`);
+          return {
+            success: true,
+            job: rereadJob,
+            skipped: true,
+          };
+        }
+
+        // If status changed to something unexpected, return error
+        if (rereadJob.status !== 'EXTRACTING') {
+          return {
+            success: false,
+            job: rereadJob,
+            error: `[EXTRACT] Job status changed to ${rereadJob.status} during claim`,
+          };
+        }
+
+        // Otherwise, continue with extraction (status is EXTRACTING now)
+        job.status = 'EXTRACTING';
+      }
+    } catch (error) {
+      console.error(`[EXTRACT] Failed to claim job ${jobId}:`, error);
+      throw error;
+    }
+  }
+
+  // At this point, status should be EXTRACTING
   if (job.status !== 'EXTRACTING') {
     return {
       success: false,
@@ -250,7 +342,7 @@ export async function extractIngestionJob(
     };
   }
 
-  // Step 3: Validate raw HTML exists
+  // Step 5: Validate raw HTML exists
   if (!job.rawHtml) {
     const failedJob = await updateIngestionJob({
       id: jobId,
@@ -265,7 +357,7 @@ export async function extractIngestionJob(
     };
   }
 
-  // Step 4: Check raw HTML size limit
+  // Step 6: Check raw HTML size limit
   if (job.rawHtml.length > MAX_RAW_HTML_SIZE) {
     const errorMsg = `[EXTRACT] rawHtml too large: ${job.rawHtml.length} chars (max: ${MAX_RAW_HTML_SIZE})`;
     console.error(`[EXTRACT] Failed for job ${jobId}: ${errorMsg}`);
@@ -293,14 +385,14 @@ export async function extractIngestionJob(
 
     // Create extraction promise
     const extractionPromise = (async () => {
-      // Step 5: Parse HTML
+      // Step 7: Parse HTML
       const $ = cheerio.load(job.rawHtml!);
 
-      // Step 6: Extract title and text
+      // Step 8: Extract title and text
       const extractedTitle = extractTitle($);
       let extractedText = extractText($);
 
-      // Step 7: Apply hard limit trimming if needed
+      // Step 9: Apply hard limit trimming if needed
       if (extractedText && extractedText.length > finalConfig.hardMaxLength) {
         const trimResult = trimTextToLength(extractedText, finalConfig.maxTextLength);
         extractedText = trimResult.text;
@@ -309,7 +401,7 @@ export async function extractIngestionJob(
         extractedText = trimResult.text;
       }
 
-      // Step 8: Validate extracted content
+      // Step 10: Validate extracted content
       const validation = validateExtractedContent(
         extractedTitle,
         extractedText,
@@ -332,7 +424,8 @@ export async function extractIngestionJob(
         };
       }
 
-      // Step 9: Update job with extracted content and set status to READY_TO_GENERATE
+      // Step 11: Update job with extracted content and set status to READY_TO_GENERATE
+      // Note: READY_TO_GENERATE is a valid IngestionJobStatus (see schema.prisma)
       const updatedJob = await updateIngestionJob({
         id: jobId,
         status: 'READY_TO_GENERATE',
@@ -351,7 +444,7 @@ export async function extractIngestionJob(
     // Race extraction against timeout
     return await Promise.race([extractionPromise, timeoutPromise]);
   } catch (error) {
-    // Step 9: Handle errors
+    // Step 12: Handle errors
     let errorMessage: string;
     
     if (error instanceof Error) {

@@ -63,27 +63,37 @@ export default function AddArticlePage() {
       const fetchResult = await fetchResponse.json();
       setJobStatus(fetchResult.job.status);
 
-      // Step 3: Extract - await completion
+      // Step 3: Wait for extraction to complete (fetch auto-triggers it)
+      // Poll job until status is READY_TO_GENERATE or extractedAt exists
       setJobStatus('EXTRACTING');
-      const extractResponse = await fetch(`/api/ingestion-jobs/${job.id}/extract`, {
-        method: 'POST',
-      });
+      let extractionComplete = false;
+      const maxPolls = 30; // 30 seconds max
+      let pollCount = 0;
 
-      if (!extractResponse.ok) {
-        const error = await extractResponse.json();
-        throw new Error(error.error || 'Failed to extract content');
+      while (!extractionComplete && pollCount < maxPolls) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+        pollCount++;
+
+        const pollResponse = await fetch(`/api/ingestion-jobs/${job.id}`);
+        if (!pollResponse.ok) {
+          throw new Error('Failed to poll job status');
+        }
+
+        const pollResult = await pollResponse.json();
+        setJobStatus(pollResult.status);
+
+        // Check if extraction is complete
+        if (pollResult.status === 'READY_TO_GENERATE' || 
+            pollResult.status === 'EXTRACTED' ||
+            pollResult.extractedAt) {
+          extractionComplete = true;
+        } else if (pollResult.status === 'FAILED') {
+          throw new Error(pollResult.errorMessage || 'Extraction failed');
+        }
       }
 
-      const extractResult = await extractResponse.json();
-      setJobStatus(extractResult.job.status);
-
-      // Ensure extraction is complete before proceeding
-      // Status should be READY_TO_GENERATE or EXTRACTED
-      if (extractResult.job.status !== 'READY_TO_GENERATE' && 
-          extractResult.job.status !== 'EXTRACTED') {
-        throw new Error(
-          `Extraction did not complete successfully. Status: ${extractResult.job.status}`
-        );
+      if (!extractionComplete) {
+        throw new Error('Extraction timeout - took longer than expected');
       }
 
       // Step 4: Generate - only after extraction is complete
