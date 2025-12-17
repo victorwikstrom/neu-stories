@@ -17,6 +17,7 @@ enum StoryStatus {
   REVIEW
   PUBLISHED
   ARCHIVED
+  DISCARDED
 }
 
 enum SectionType {
@@ -73,6 +74,7 @@ model Story {
   heroImageSourceCredit  String?
   tags                   String[]
   publishedAt            DateTime?
+  discardedAt            DateTime?
   createdAt              DateTime      @default(now())
   updatedAt              DateTime      @updatedAt
   
@@ -88,6 +90,7 @@ model Story {
   
   @@index([status, publishedAt])
   @@index([publishedAt])
+  @@index([status, discardedAt])
 }
 
 model Section {

@@ -162,10 +162,12 @@ export default function AddArticlePage() {
             type="submit"
             disabled={isSubmitting || (jobStatus !== null && jobStatus !== 'FAILED')}
             className={[
-              'rounded-lg bg-zinc-900 px-6 py-3 font-medium text-white',
+              'rounded-lg bg-zinc-900 px-6 py-3 font-medium text-white cursor-pointer',
               'transition-colors hover:bg-zinc-700',
               'dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200',
               'disabled:cursor-not-allowed disabled:opacity-50',
+              
+              
             ].join(' ')}
           >
             {isSubmitting ? 'Creating Job...' : 'Generate'}

@@ -33,6 +33,12 @@ export default function AdminLayout({
                 Add Article
               </Link>
               <Link
+                href="/admin/drafts"
+                className="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
+              >
+                Drafts
+              </Link>
+              <Link
                 href="/"
                 className="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50"
               >

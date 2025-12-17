@@ -98,21 +98,39 @@ function mapPrismaSectionToDomain(prismaSection: PrismaStoryWithRelations['secti
 }
 
 function mapPrismaStoryToDomain(prismaStory: PrismaStoryWithRelations): Story {
+  // Collect all unique sources from both story sources and section sources
+  const sourceMap = new Map<string, Source>();
+  
+  // Add story-level primary sources
+  prismaStory.storySources.forEach(ss => {
+    const source = mapPrismaSourceToDomain(ss.source);
+    sourceMap.set(source.id, source);
+  });
+  
+  // Add section-level sources
+  prismaStory.sections.forEach(section => {
+    section.sectionSources.forEach(ss => {
+      const source = mapPrismaSourceToDomain(ss.source);
+      sourceMap.set(source.id, source);
+    });
+  });
+  
   const story: Story = {
     id: prismaStory.id,
     slug: prismaStory.slug,
     headline: prismaStory.headline,
     summary: prismaStory.summary,
-    status: prismaStory.status.toLowerCase() as 'draft' | 'review' | 'published' | 'archived',
+    status: prismaStory.status.toLowerCase() as 'draft' | 'review' | 'published' | 'archived' | 'discarded',
     heroImage: prismaStory.heroImageUrl && prismaStory.heroImageAlt ? {
       url: prismaStory.heroImageUrl,
       alt: prismaStory.heroImageAlt,
       sourceCredit: prismaStory.heroImageSourceCredit ?? undefined,
     } : undefined,
     sections: prismaStory.sections.map(mapPrismaSectionToDomain),
-    primarySources: prismaStory.storySources.map(ss => mapPrismaSourceToDomain(ss.source)),
+    primarySources: Array.from(sourceMap.values()),
     tags: prismaStory.tags.length > 0 ? prismaStory.tags : undefined,
     publishedAt: prismaStory.publishedAt?.toISOString(),
+    discardedAt: prismaStory.discardedAt?.toISOString(),
     createdAt: prismaStory.createdAt.toISOString(),
     updatedAt: prismaStory.updatedAt.toISOString(),
     promptVersion: prismaStory.promptVersion ?? undefined,
@@ -184,6 +202,302 @@ export async function getStoryBySlug(slug: string): Promise<Story | null> {
   if (!prismaStory) {
     return null;
   }
+
+  return mapPrismaStoryToDomain(prismaStory);
+}
+
+export async function getStoryById(id: string): Promise<Story | null> {
+  const prismaStory = await db.story.findUnique({
+    where: { id },
+    include: {
+      sections: {
+        include: {
+          sectionSources: {
+            include: {
+              source: true,
+            },
+          },
+        },
+        orderBy: {
+          order: 'asc',
+        },
+      },
+      storySources: {
+        include: {
+          source: true,
+        },
+      },
+    },
+  });
+
+  if (!prismaStory) {
+    return null;
+  }
+
+  return mapPrismaStoryToDomain(prismaStory);
+}
+
+export async function getDraftStories(): Promise<Story[]> {
+  const prismaStories = await db.story.findMany({
+    where: {
+      status: 'DRAFT',
+    },
+    include: {
+      sections: {
+        include: {
+          sectionSources: {
+            include: {
+              source: true,
+            },
+          },
+        },
+        orderBy: {
+          order: 'asc',
+        },
+      },
+      storySources: {
+        include: {
+          source: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  });
+
+  return prismaStories.map(mapPrismaStoryToDomain);
+}
+
+export type UpdateStoryInput = {
+  headline?: string;
+  summary?: string;
+  sections?: Array<{
+    id?: string;
+    type: 'what_happened' | 'background' | 'related';
+    title?: string;
+    body: string;
+    order: number;
+    sourceIds?: string[];
+  }>;
+  status?: 'draft' | 'review' | 'published' | 'archived';
+};
+
+export async function updateStory(id: string, input: UpdateStoryInput): Promise<Story> {
+  const updateData: Prisma.StoryUpdateInput = {};
+
+  if (input.headline !== undefined) {
+    updateData.headline = input.headline;
+  }
+
+  if (input.summary !== undefined) {
+    updateData.summary = input.summary;
+  }
+
+  if (input.status !== undefined) {
+    updateData.status = input.status.toUpperCase() as StoryStatus;
+  }
+
+  if (input.sections !== undefined) {
+    updateData.sections = {
+      deleteMany: {},
+      create: input.sections.map((section) => ({
+        type: mapSectionTypeToPrisma(section.type),
+        title: section.title,
+        body: section.body,
+        order: section.order,
+        sectionSources: {
+          create: (section.sourceIds ?? []).map(sourceId => ({
+            source: {
+              connect: { id: sourceId },
+            },
+          })),
+        },
+      })),
+    };
+  }
+
+  const prismaStory = await db.story.update({
+    where: { id },
+    data: updateData,
+    include: {
+      sections: {
+        include: {
+          sectionSources: {
+            include: {
+              source: true,
+            },
+          },
+        },
+        orderBy: {
+          order: 'asc',
+        },
+      },
+      storySources: {
+        include: {
+          source: true,
+        },
+      },
+    },
+  });
+
+  return mapPrismaStoryToDomain(prismaStory);
+}
+
+function extractDomain(url: string): string {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname.replace('www.', '');
+  } catch {
+    return 'unknown';
+  }
+}
+
+function generateSourceLabel(url: string): string {
+  const domain = extractDomain(url);
+  return domain.split('.')[0] || 'source';
+}
+
+export async function createOrGetSourceFromUrl(url: string): Promise<Source> {
+  const existingSource = await db.source.findFirst({
+    where: { url },
+  });
+
+  if (existingSource) {
+    return mapPrismaSourceToDomain(existingSource);
+  }
+
+  const domain = extractDomain(url);
+  const label = generateSourceLabel(url);
+
+  const newSource = await db.source.create({
+    data: {
+      url,
+      label,
+      domain,
+      type: 'EXTERNAL',
+      retrievedAt: new Date(),
+    },
+  });
+
+  return mapPrismaSourceToDomain(newSource);
+}
+
+export async function publishStory(id: string): Promise<Story> {
+  const story = await db.story.findUnique({
+    where: { id },
+    include: {
+      sections: {
+        include: {
+          sectionSources: true,
+        },
+        orderBy: {
+          order: 'asc',
+        },
+      },
+    },
+  });
+
+  if (!story) {
+    throw new Error('Story not found');
+  }
+
+  if (story.status !== 'DRAFT') {
+    throw new Error('Only draft stories can be published');
+  }
+
+  // Validate that every section has at least one source
+  const sectionsWithoutSources = story.sections.filter(
+    section => section.sectionSources.length === 0
+  );
+
+  if (sectionsWithoutSources.length > 0) {
+    const sectionErrors = sectionsWithoutSources.map(section => ({
+      sectionId: section.id,
+      type: section.type,
+      order: section.order,
+      message: 'Section must have at least one source',
+    }));
+    
+    const error = new Error('Validation failed: Some sections are missing sources') as Error & {
+      code: string;
+      sectionErrors: typeof sectionErrors;
+    };
+    error.code = 'VALIDATION_ERROR';
+    error.sectionErrors = sectionErrors;
+    throw error;
+  }
+
+  const prismaStory = await db.story.update({
+    where: { id },
+    data: {
+      status: 'PUBLISHED' as StoryStatus,
+      publishedAt: new Date(),
+    },
+    include: {
+      sections: {
+        include: {
+          sectionSources: {
+            include: {
+              source: true,
+            },
+          },
+        },
+        orderBy: {
+          order: 'asc',
+        },
+      },
+      storySources: {
+        include: {
+          source: true,
+        },
+      },
+    },
+  });
+
+  return mapPrismaStoryToDomain(prismaStory);
+}
+
+export async function discardStory(id: string): Promise<Story> {
+  const story = await db.story.findUnique({
+    where: { id },
+    select: { status: true },
+  });
+
+  if (!story) {
+    throw new Error('Story not found');
+  }
+
+  if (story.status !== 'DRAFT') {
+    throw new Error('Only draft stories can be discarded');
+  }
+
+  const prismaStory = await db.story.update({
+    where: { id },
+    data: {
+      status: 'DISCARDED' as StoryStatus,
+      discardedAt: new Date(),
+    },
+    include: {
+      sections: {
+        include: {
+          sectionSources: {
+            include: {
+              source: true,
+            },
+          },
+        },
+        orderBy: {
+          order: 'asc',
+        },
+      },
+      storySources: {
+        include: {
+          source: true,
+        },
+      },
+    },
+  });
 
   return mapPrismaStoryToDomain(prismaStory);
 }
