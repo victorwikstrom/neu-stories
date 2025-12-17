@@ -1,10 +1,19 @@
 'use client';
 
+import React from 'react';
 import { useStories } from '@/lib/use-stories';
 import { StoryReader } from '@/components/StoryReader';
 
-export default function Home() {
+type PageProps = {
+  params: Promise<{
+    slug: string;
+  }>;
+};
+
+export default function StoryPage({ params }: PageProps) {
   const { data: stories, isLoading, error } = useStories();
+  const resolvedParams = React.use(params);
+  const { slug } = resolvedParams;
 
   // Loading state
   if (isLoading) {
@@ -67,6 +76,7 @@ export default function Home() {
     );
   }
 
-  // Success state - render story reader
-  return <StoryReader stories={stories} />;
+  // Success state - render story reader with initial slug
+  return <StoryReader stories={stories} initialSlug={slug} />;
 }
+
