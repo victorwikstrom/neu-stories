@@ -1,12 +1,14 @@
 'use client';
 
 import Image from 'next/image';
+import Link from 'next/link';
 
 type StoryCardProps = {
   headline: string;
   summary: string;
   heroImageUrl?: string | null;
   heroImageAlt?: string;
+  slug: string;
 };
 
 export function StoryCard({
@@ -14,9 +16,10 @@ export function StoryCard({
   summary,
   heroImageUrl,
   heroImageAlt,
+  slug,
 }: StoryCardProps) {
   return (
-    <article className="h-screen w-screen flex flex-col bg-white dark:bg-zinc-900">
+    <article className="h-screen w-screen flex flex-col bg-white dark:bg-zinc-900 relative">
       {/* Hero Image Section - Top Half */}
       <div className="relative h-1/2 w-full bg-zinc-100 dark:bg-zinc-800">
         {heroImageUrl ? (
@@ -65,6 +68,24 @@ export function StoryCard({
           </p>
         </div>
       </div>
+
+      {/* Down Arrow for Depth View */}
+      <Link
+        href={`/stories/${slug}/depth`}
+        className="absolute bottom-8 left-1/2 -translate-x-1/2 rounded-full bg-zinc-900/10 p-3 backdrop-blur-sm transition-all hover:bg-zinc-900/20 dark:bg-zinc-50/10 dark:hover:bg-zinc-50/20"
+        onClick={(e) => e.stopPropagation()}
+        aria-label="View depth analysis"
+      >
+        <svg
+          className="h-6 w-6 text-zinc-900 dark:text-zinc-50"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
+      </Link>
     </article>
   );
 }

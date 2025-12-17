@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence, PanInfo } from 'framer-motion';
 import { StoryCard } from './StoryCard';
 import { StoryIndicators } from './StoryIndicators';
@@ -13,8 +14,10 @@ type StoryReaderProps = {
 
 const SWIPE_THRESHOLD = 50;
 const SWIPE_CONFIDENCE_THRESHOLD = 10000;
+const VERTICAL_SWIPE_THRESHOLD = 80; // Higher threshold for vertical to avoid accidental triggers
 
 export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
+  const router = useRouter();
   const [currentIndex, setCurrentIndex] = useState(() => {
     if (!initialSlug) return 0;
     const index = stories.findIndex((story) => story.slug === initialSlug);
@@ -24,6 +27,7 @@ export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
 
   const canGoNext = currentIndex < stories.length - 1;
   const canGoPrev = currentIndex > 0;
+  const currentStory = stories[currentIndex];
 
   const goToNext = useCallback(() => {
     if (canGoNext) {
@@ -48,12 +52,15 @@ export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
         goToPrev();
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        router.push(`/stories/${currentStory.slug}/depth`);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [goToNext, goToPrev]);
+  }, [goToNext, goToPrev, router, currentStory.slug]);
 
   // Handle swipe gesture
   const handleDragEnd = (
@@ -61,12 +68,29 @@ export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
     info: PanInfo
   ) => {
     const { offset, velocity } = info;
-    const swipe = Math.abs(offset.x) * velocity.x;
-
-    if (swipe < -SWIPE_CONFIDENCE_THRESHOLD || offset.x < -SWIPE_THRESHOLD) {
-      goToNext();
-    } else if (swipe > SWIPE_CONFIDENCE_THRESHOLD || offset.x > SWIPE_THRESHOLD) {
-      goToPrev();
+    
+    // Determine if this is primarily a horizontal or vertical gesture
+    const absX = Math.abs(offset.x);
+    const absY = Math.abs(offset.y);
+    
+    // Vertical swipe detection (downward)
+    // Only trigger if vertical movement is dominant and exceeds threshold
+    if (absY > absX && offset.y > VERTICAL_SWIPE_THRESHOLD) {
+      // Navigate to depth view
+      router.push(`/stories/${currentStory.slug}/depth`);
+      return;
+    }
+    
+    // Horizontal swipe detection (left/right for story navigation)
+    // Only process if horizontal movement is dominant
+    if (absX > absY) {
+      const swipe = absX * velocity.x;
+      
+      if (swipe < -SWIPE_CONFIDENCE_THRESHOLD || offset.x < -SWIPE_THRESHOLD) {
+        goToNext();
+      } else if (swipe > SWIPE_CONFIDENCE_THRESHOLD || offset.x > SWIPE_THRESHOLD) {
+        goToPrev();
+      }
     }
   };
 
@@ -82,8 +106,6 @@ export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
       goToNext();
     }
   };
-
-  const currentStory = stories[currentIndex];
 
   const variants = {
     enter: (direction: number) => ({
@@ -122,13 +144,13 @@ export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
             x: { type: 'spring', stiffness: 300, damping: 30 },
             opacity: { duration: 0.2 },
           }}
-          drag="x"
-          dragConstraints={{ left: 0, right: 0 }}
+          drag
+          dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
           dragElastic={0.2}
           onDragEnd={handleDragEnd}
           className="absolute inset-0"
           style={{ 
-            touchAction: 'pan-y pinch-zoom',
+            touchAction: 'none',
             WebkitUserSelect: 'none',
             userSelect: 'none',
           }}
@@ -138,7 +160,7 @@ export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
             className="h-full w-full cursor-pointer touch-none"
             role="button"
             tabIndex={0}
-            aria-label={`Navigate stories. Currently viewing: ${currentStory.headline}. Press left arrow for previous, right arrow for next.`}
+            aria-label={`Navigate stories. Currently viewing: ${currentStory.headline}. Press left arrow for previous, right arrow for next, down arrow for depth view.`}
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
@@ -151,6 +173,7 @@ export function StoryReader({ stories, initialSlug }: StoryReaderProps) {
               summary={currentStory.summary}
               heroImageUrl={currentStory.heroImage?.url}
               heroImageAlt={currentStory.heroImage?.alt}
+              slug={currentStory.slug}
             />
           </div>
         </motion.div>
